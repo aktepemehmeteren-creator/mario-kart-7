@@ -302,9 +302,16 @@ static void cone3(float cx, float cy, float cz, float r, float h, int sides, flo
 }
 
 /* ---------- Karakterler, pistler, temalar ---------- */
-static const unsigned kBody[NK] = { RGB(225, 35, 35), RGB(40, 90, 235), RGB(30, 175, 70), RGB(245, 205, 25), RGB(160, 70, 205), RGB(245, 135, 25) };
+static const unsigned kBody[NK] = {
+    RGB(225, 35, 35),   /* Mario */
+    RGB(35, 165, 70),   /* Luigi */
+    RGB(35, 180, 70),   /* Yoshi */
+    RGB(245, 205, 25),
+    RGB(80, 110, 230),
+    RGB(245, 135, 25)
+};
 static const unsigned kTrim[NK] = { RGB(255, 255, 255), RGB(255, 255, 255), RGB(255, 255, 255), RGB(40, 40, 40), RGB(255, 255, 255), RGB(40, 40, 40) };
-static const char *charNames[NK] = { "RED", "BLUE", "GREEN", "YELLOW", "PURPLE", "ORANGE" };
+static const char *charNames[NK] = { "MARIO", "LUIGI", "YOSHI", "RED", "BLUE", "YELLOW" };
 /* karakter ozellikleri: hiz / ivme / direksiyon carpani */
 static const float cSpd[NK] = { 1.00f, 1.05f, 0.97f, 0.97f, 1.06f, 0.94f };
 static const float cAcc[NK] = { 1.00f, 0.92f, 1.12f, 1.00f, 0.88f, 1.15f };
@@ -845,8 +852,6 @@ static PcmSample realMusic[3]; /* menu / race / finish */
 static volatile int realSfxId = -1;
 static volatile unsigned realSfxSeq = 0;
 static volatile int useRealMusic = 0;
-static volatile int useRealSfx = 0;
-static volatile int useRealEngine = 0;
 static volatile int engineBand = 0;
 
 static uint16_t rd16le(const unsigned char *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
@@ -934,11 +939,9 @@ static int loadAudioBank(void) {
         ASSET_ROOT "assets/audio/race_music.wav",
         ASSET_ROOT "assets/audio/finish_music.wav",
     };
-    int ok = 0, sfxOk = 0, engineOk = 0;
-    for (int i = 0; i < FSFX_COUNT; i++) if (loadWavFile(sfxPath[i], &realSfx[i])) { ok++; sfxOk++; }
-    for (int i = 0; i < 4; i++) if (loadWavFile(enginePath[i], &realEngine[i])) { ok++; engineOk++; }
-    useRealSfx = (sfxOk == FSFX_COUNT) ? 1 : 0;
-    useRealEngine = (engineOk == 4) ? 1 : 0;
+    int ok = 0;
+    for (int i = 0; i < FSFX_COUNT; i++) if (loadWavFile(sfxPath[i], &realSfx[i])) ok++;
+    for (int i = 0; i < 4; i++) if (loadWavFile(enginePath[i], &realEngine[i])) ok++;
     int musicOk = 0;
     for (int i = 0; i < 3; i++) if (loadWavFile(musicPath[i], &realMusic[i])) musicOk++;
     useRealMusic = (musicOk == 3) ? 1 : 0;
@@ -1080,10 +1083,10 @@ static int audioThread(SceSize args, void *argp) {
             noise = noise * 1664525u + 1013904223u;
             float nz = ((noise >> 16) & 0xFF) / 128.0f - 1.0f;
             engVol += (engTarget - engVol) * 0.0005f;
-            float eng = (!useRealEngine && aEngineOn) ? (((2.0f * engPh - 1.0f) * 0.5f + (eng2Ph < 0.5f ? 0.25f : -0.25f) + nz * 0.08f) * 0.30f * engVol) : 0.0f;
+            float eng = ((2.0f * engPh - 1.0f) * 0.5f + (eng2Ph < 0.5f ? 0.25f : -0.25f) + nz * 0.08f) * 0.30f * engVol;
 
             float sfx = 0.0f;
-            if(!useRealSfx && sfxType != SFX_NONE) {
+            if(sfxType != SFX_NONE) {
                 float dur=(sfxType==SFX_FINISH?0.9f:(sfxType==SFX_BOOST?0.28f:0.20f));
                 if(sfxTime<dur) {
                     float f=180.0f;
@@ -1109,15 +1112,47 @@ static int audioThread(SceSize args, void *argp) {
     }
     return 0;
 }
+static int realMixedAudioThread(SceSize args, void *argp) {
+    (void)args; (void)argp;
+    int ch = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, AUDIO_BLOCK, PSP_AUDIO_FORMAT_MONO);
+    if (ch < 0) return 0;
+    static short buf[AUDIO_BLOCK];
+    int sfxId = -1, sfxPos = 0; unsigned seenSeq = 0;
+    int engBandCur = -1, engPos = 0;
+    int musicSceneCur = -1, musicPos = 0;
+    for (;;) {
+        if (seenSeq != realSfxSeq) { seenSeq = realSfxSeq; sfxId = realSfxId; sfxPos = 0; }
+        int eb = aEngineOn ? (int)clampf((float)engineBand, 0.0f, 3.0f) : -1;
+        if (eb != engBandCur) { engBandCur = eb; engPos = 0; }
+        int ms = aMusicOn ? aMusicScene : -1;
+        if (ms != musicSceneCur) { musicSceneCur = ms; musicPos = 0; }
+        for (int i = 0; i < AUDIO_BLOCK; i++) {
+            float mix = 0.0f;
+            if (engBandCur >= 0 && engBandCur < 4 && realEngine[engBandCur].data && realEngine[engBandCur].frames > 0) {
+                mix += ((float)realEngine[engBandCur].data[engPos++] / 32768.0f) * 0.34f;
+                if (engPos >= realEngine[engBandCur].frames) engPos = 0;
+            }
+            if (musicSceneCur >= 0 && musicSceneCur < 3 && realMusic[musicSceneCur].data && realMusic[musicSceneCur].frames > 0) {
+                mix += ((float)realMusic[musicSceneCur].data[musicPos++] / 32768.0f) * 0.20f;
+                if (musicPos >= realMusic[musicSceneCur].frames) musicPos = 0;
+            }
+            if (sfxId >= 0 && sfxId < FSFX_COUNT && realSfx[sfxId].data && sfxPos < realSfx[sfxId].frames) {
+                mix += ((float)realSfx[sfxId].data[sfxPos++] / 32768.0f) * 0.60f;
+                if (sfxPos >= realSfx[sfxId].frames) sfxId = -1;
+            }
+            if (mix > 0.95f) mix = 0.95f;
+            if (mix < -0.95f) mix = -0.95f;
+            buf[i] = (short)(mix * 30000.0f);
+        }
+        sceAudioOutputBlocking(ch, PSP_AUDIO_VOLUME_MAX, buf);
+    }
+    return 0;
+}
+
 static void startAudio(void) {
-    int th = sceKernelCreateThread("audio_thread", audioThread, 0x12, 0x8000, 0, NULL);
+    /* Tek kanal: WAV efekt + motor + muzik birlikte mikslenir. */
+    int th = sceKernelCreateThread("real_mix_audio", realMixedAudioThread, 0x12, 0x9000, 0, NULL);
     if (th >= 0) sceKernelStartThread(th, 0, NULL);
-    int ts = sceKernelCreateThread("real_sfx", realSfxThread, 0x13, 0x7000, 0, NULL);
-    if (ts >= 0) sceKernelStartThread(ts, 0, NULL);
-    int te = sceKernelCreateThread("real_engine", realEngineThread, 0x14, 0x7000, 0, NULL);
-    if (te >= 0) sceKernelStartThread(te, 0, NULL);
-    int tm = sceKernelCreateThread("real_music", realMusicThread, 0x15, 0x7000, 0, NULL);
-    if (tm >= 0) sceKernelStartThread(tm, 0, NULL);
 }
 
 /* ---------- Dokular (kodla uretilir, tekrarlanan 64x64) ---------- */
@@ -1174,6 +1209,8 @@ static PspTexture *texGrassFile = NULL, *texRoadFile = NULL;
 static PspTexture *texSkyDay = NULL, *texSkySunset = NULL, *texSkyNight = NULL;
 static PspTexture *texCloud = NULL, *texAtlas = NULL, *texMountain = NULL;
 static PspTexture *texFace[NK][3];
+static int textureAssetCount = 0;
+static int audioAssetCount = 0;
 
 typedef struct { int x, y, w, h; } AtlasUV;
 static const AtlasUV atlasUV[8] = {
@@ -1210,7 +1247,7 @@ static PspTexture *loadPngTexture(const char *path) {
     sceKernelDcacheWritebackInvalidateAll();
     return &texCache[slot];
 }
-static void loadTextureBank(void) {
+static int loadTextureBank(void) {
     texGrassFile=loadPngTexture(ASSET_ROOT "assets/textures/grass.png");
     texRoadFile=loadPngTexture(ASSET_ROOT "assets/textures/road.png");
     texSkyDay=loadPngTexture(ASSET_ROOT "assets/textures/sky_day.png");
@@ -1241,6 +1278,9 @@ static void loadTextureBank(void) {
     texFace[4][1]=texFace[4][0]; texFace[4][2]=texFace[4][0];
     texFace[5][0]=loadPngTexture(ASSET_ROOT "assets/textures/mario_face_happy.png");
     texFace[5][1]=texFace[5][0]; texFace[5][2]=texFace[5][0];
+    textureAssetCount = 0;
+    for (int i = 0; i < 3; i++) if (texFace[i][0] && texFace[i][0]->ready) textureAssetCount++;
+    return textureAssetCount;
 }
 static void bindTexture(const PspTexture *t, const void *fallback) {
     sceGuTexMode(GU_PSM_8888,0,0,0); sceGuTexFunc(GU_TFX_MODULATE,GU_TCC_RGB); sceGuTexFilter(GU_LINEAR,GU_LINEAR); sceGuTexWrap(GU_REPEAT,GU_REPEAT);
@@ -1265,23 +1305,37 @@ static void drawAtlasIcon(int cell,float x,float y,float size,unsigned c) {
 }
 
 static void drawFace3D(int who, float tAnimNow) {
+    /* Oyuncu kamerası arkadan baktığı için yüzü sürücünün arka tarafına
+       yerleştiriyoruz. Böylece Mario/Luigi/Yoshi yarışta gerçekten görünür. */
     if (who < 0 || who >= NK) return;
     int cid = kChar[who];
-    int fi = (cid == 0 || cid == 1) ? ((int)(tAnimNow * 2.0f) % 3) : 0;
+    if (cid > 2) return;
+    int fi = (cid == 0 || cid == 1) ? ((int)(tAnimNow * 2.5f) % 3) : 0;
     PspTexture *t = texFace[cid][fi];
     if (!t || !t->ready) return;
     Vtx *v = (Vtx*)sceGuGetMemory(6 * sizeof(Vtx));
-    float x = 0.085f;
-    float y0 = 1.34f, y1 = 1.92f;
-    float z0 = -0.29f, z1 = 0.29f;
-    unsigned c = RGBA(255,255,255,235);
+    float x = -0.57f;
+    float y0 = 1.25f, y1 = 2.00f;
+    float z0 = -0.38f, z1 = 0.38f;
+    unsigned c = RGBA(255,255,255,255);
     v[0]=(Vtx){0,0,c,x,y1,z0}; v[1]=(Vtx){(float)t->w,0,c,x,y1,z1}; v[2]=(Vtx){(float)t->w,(float)t->h,c,x,y0,z1};
     v[3]=(Vtx){0,0,c,x,y1,z0}; v[4]=(Vtx){(float)t->w,(float)t->h,c,x,y0,z1}; v[5]=(Vtx){0,(float)t->h,c,x,y0,z0};
     sceGuEnable(GU_TEXTURE_2D);
-    sceGuTexMode(GU_PSM_8888,0,0,0); sceGuTexFunc(GU_TFX_MODULATE,GU_TCC_RGBA); sceGuTexFilter(GU_LINEAR,GU_LINEAR); sceGuTexWrap(GU_CLAMP,GU_CLAMP);
+    sceGuTexMode(GU_PSM_8888,0,0,0); sceGuTexFunc(GU_TFX_MODULATE,GU_TCC_RGBA); sceGuTexFilter(GU_NEAREST,GU_NEAREST); sceGuTexWrap(GU_CLAMP,GU_CLAMP);
     sceGuTexImage(0,t->w,t->h,t->w,t->data); sceGuTexFlush();
     sceGumDrawArray(GU_TRIANGLES,VF3,6,0,v);
     sceGuDisable(GU_TEXTURE_2D);
+}
+
+static void drawPlayerPortraitHUD(void) {
+    int cid = kChar[0];
+    if (cid < 0 || cid > 2) return;
+    int fi = (cid == 0 || cid == 1) ? ((int)(tAnim * 2.5f) % 3) : 0;
+    PspTexture *t = texFace[cid][fi];
+    if (!t || !t->ready) return;
+    rect(4, 30, 52, 52, RGBA(0,0,0,170));
+    drawTexRect(t, 6, 32, 48, 48, 0, 0, (float)t->w, (float)t->h, RGBA(255,255,255,255));
+    text(64, 34, 8, 14, 2, charNames[cid], RGB(255,220,70));
 }
 
 /* ---------- Kayit sistemi (v2) ---------- */
@@ -2502,6 +2556,7 @@ static int atlasCellForItem(int item) {
 static void drawHUD(void) {
     char buf[40];
     Kart *p = &K[0];
+    if (state == 0 || state == 1 || state == 2) drawPlayerPortraitHUD();
 
     if (state == STATE_STATS) {
         rect(0,0,W,H,RGBA(0,0,0,180));
@@ -2606,6 +2661,11 @@ static void drawHUD(void) {
         float mp = 1.0f + 0.05f * sinf(tAnim * 3.0f);
         int mw = (int)(30 * mp), mh = (int)(50 * mp);
         text(W / 2 - textWidth("MARIO KART PSP", mw, 8) / 2, 38 - (mh - 50) / 2, mw, mh, 8, "MARIO KART PSP", RGB(255, 220, 50));
+        {
+            char abuf[40];
+            snprintf(abuf, sizeof(abuf), "CHAR %d/3  AUDIO %d", textureAssetCount, audioAssetCount);
+            text(W / 2 - textWidth(abuf, 5, 1) / 2, 70, 5, 9, 1, abuf, RGB(170, 220, 240));
+        }
         {
             static const char *names[5] = { "TEK KISILIK", "TIME TRIAL", "CHAMPIONSHIP", "CAREER", "ISTATISTIK" };
             for (int i = 0; i < 5; i++) {
@@ -2821,8 +2881,8 @@ int main(void) {
     charSel = saveData.lastChar;
     trackSel = saveData.lastTrack;
     makeTextures();
-    loadTextureBank();
-    loadAudioBank();
+    textureAssetCount = loadTextureBank();
+    audioAssetCount = loadAudioBank();
     startAudio();
     initGraphics();
     sceCtrlSetSamplingCycle(0);
