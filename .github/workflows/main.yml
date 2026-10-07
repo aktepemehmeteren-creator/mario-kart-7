@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Kodu indir
+      - name: Checkout
         uses: actions/checkout@v5
 
       - name: PSPDEV ile derle
@@ -26,33 +26,20 @@ jobs:
               make -j2
             '
 
-      - name: Oyun klasörünü oluştur
+      - name: EBOOT kontrol
         run: |
+          test -f build/EBOOT.PBP
           mkdir -p release/PSP/GAME/MARIOKART
           cp build/EBOOT.PBP release/PSP/GAME/MARIOKART/
 
-      - name: Texture ve sesleri kopyala
+      - name: Assetleri kopyala
         run: |
-          cp -r assets/textures release/PSP/GAME/MARIOKART/
-          cp -r assets/audio release/PSP/GAME/MARIOKART/
+          if [ -d assets ]; then
+            cp -r assets release/PSP/GAME/MARIOKART/
+          fi
 
-      - name: Dosyaları kontrol et
-        run: |
-          echo "=== EBOOT ==="
-          ls -lh release/PSP/GAME/MARIOKART/EBOOT.PBP
-          echo "=== TEXTURES ==="
-          find release/PSP/GAME/MARIOKART/textures -type f | wc -l
-          echo "=== AUDIO ==="
-          find release/PSP/GAME/MARIOKART/audio -type f | wc -l
-
-      - name: PSP klasörünü artifact olarak yükle
+      - name: PSP paketi
         uses: actions/upload-artifact@v6
         with:
           name: MarioKartPSP-GAME
           path: release/PSP/GAME/MARIOKART/
-
-      - name: EBOOT.PBP yükle
-        uses: actions/upload-artifact@v6
-        with:
-          name: MarioKartPSP-EBOOT-PBP
-          path: release/PSP/GAME/MARIOKART/EBOOT.PBP
